@@ -55,45 +55,45 @@ impl Widget {
     }
 
     pub fn spawn_thread(&mut self) -> std::thread::JoinHandle<()> {
-        const LOOP_WAIT: f64 = 0.016;
+        const WAIT_TIME: f64 = 0.001;
 
         let scenario = self.scenario.clone();
-        let mut instant = None;
         std::thread::spawn(move || loop {
-            'scope: {
-                let scenario_guard = &mut scenario.lock();
-                let Some(scenario) = scenario_guard.as_mut() else {
-                    instant = None;
-                    break 'scope;
-                };
+            let instant = std::time::Instant::now();
 
-                let new_instant = std::time::Instant::now();
-                let Some(instant) = std::mem::replace(&mut instant, Some(new_instant)) else {
-                    break 'scope;
-                };
+            if let Some(scenario) = scenario.lock().as_mut() {
+                scenario.forward(scenario.desc.delta_t);
 
-                let delta_time = instant.elapsed().as_secs_f64();
-                scenario.forward(delta_time);
+                let elapsed = instant.elapsed().as_secs_f64();
+                let loop_wait =
+                    (scenario.desc.delta_t - elapsed).max(0.0) / scenario.desc.time_scale;
+                std::thread::sleep(std::time::Duration::from_secs_f64(loop_wait));
+            } else {
+                std::thread::sleep(std::time::Duration::from_secs_f64(WAIT_TIME));
             }
-
-            std::thread::sleep(std::time::Duration::from_secs_f64(LOOP_WAIT));
         })
     }
 }
 
 #[derive(Clone)]
 pub struct Descriptor {
+    time_scale: f64,
+    delta_t: f64,
     value: f64,
 }
 
 impl Descriptor {
     pub fn new() -> Self {
         Self {
-            value: Default::default(),
+            time_scale: 1.0,
+            delta_t: 0.01666,
+            value: 1.0,
         }
     }
 
     pub fn show_inside(&mut self, ui: &mut egui::Ui) {
+        ui.add(egui::Slider::new(&mut self.time_scale, 0.0..=10.0).text("Time Scale"));
+        ui.add(egui::Slider::new(&mut self.delta_t, 0.0..=0.1).text("Delta Time"));
         ui.add(egui::Slider::new(&mut self.value, 0.0..=1.0).text("Value"));
     }
 }

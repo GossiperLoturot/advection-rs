@@ -1,18 +1,19 @@
 use miniquad as mq;
 
-mod widget;
+mod body;
+mod simulation;
 
 pub struct State {
     egui_mq: egui_miniquad::EguiMq,
     mq_ctx: Box<dyn mq::RenderingBackend>,
-    widget: widget::Widget,
+    widget: body::Body,
     _thread: std::thread::JoinHandle<()>,
 }
 
 impl State {
     fn new() -> Self {
         let mut mq_ctx = mq::window::new_rendering_backend();
-        let mut widget = widget::Widget::new();
+        let mut widget = body::Body::new();
 
         Self {
             egui_mq: egui_miniquad::EguiMq::new(mq_ctx.as_mut()),

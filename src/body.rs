@@ -1,12 +1,14 @@
 use parking_lot::Mutex;
 use std::sync::Arc;
 
-pub struct Widget {
+use crate::simulation::{Descriptor, Scenario};
+
+pub struct Body {
     desc: Descriptor,
     scenario: Arc<Mutex<Option<Scenario>>>,
 }
 
-impl Widget {
+impl Body {
     pub fn new() -> Self {
         Self {
             desc: Descriptor::new(),
@@ -72,53 +74,5 @@ impl Widget {
                 std::thread::sleep(std::time::Duration::from_secs_f64(WAIT_TIME));
             }
         })
-    }
-}
-
-#[derive(Clone)]
-pub struct Descriptor {
-    time_scale: f64,
-    delta_t: f64,
-    value: f64,
-}
-
-impl Descriptor {
-    pub fn new() -> Self {
-        Self {
-            time_scale: 1.0,
-            delta_t: 0.01666,
-            value: 1.0,
-        }
-    }
-
-    pub fn show_inside(&mut self, ui: &mut egui::Ui) {
-        ui.add(egui::Slider::new(&mut self.time_scale, 0.0..=10.0).text("Time Scale"));
-        ui.add(egui::Slider::new(&mut self.delta_t, 0.0..=0.1).text("Delta Time"));
-        ui.add(egui::Slider::new(&mut self.value, 0.0..=1.0).text("Value"));
-    }
-}
-
-pub struct Scenario {
-    desc: Descriptor,
-    value: f64,
-}
-
-impl Scenario {
-    pub fn new(desc: Descriptor) -> Self {
-        Self {
-            desc,
-            value: Default::default(),
-        }
-    }
-
-    pub fn forward(&mut self, delta_time: f64) {
-        self.value += self.desc.value * delta_time;
-    }
-
-    pub fn show_inside(&mut self, ui: &mut egui_plot::PlotUi) {
-        let points = egui_plot::Points::new(vec![[self.value, 0.0]])
-            .radius(4.0)
-            .color(egui::Color32::RED);
-        ui.add(points);
     }
 }

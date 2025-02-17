@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 egui = "0.28"
 egui-miniquad = "0.15"
-egui_plot = "0.28.0"
+egui_plot = "0.28"
 miniquad = "0.4"
 nalgebra = "0.33"
+parking_lot = "0.12"

@@ -562,6 +562,7 @@ dependencies = [
  "egui_plot",
  "miniquad",
  "nalgebra",
+ "parking_lot",
 ]
 
 [[package]]

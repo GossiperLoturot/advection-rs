@@ -6,16 +6,19 @@ pub struct State {
     egui_mq: egui_miniquad::EguiMq,
     mq_ctx: Box<dyn mq::RenderingBackend>,
     widget: widget::Widget,
+    _thread: std::thread::JoinHandle<()>,
 }
 
 impl State {
     fn new() -> Self {
         let mut mq_ctx = mq::window::new_rendering_backend();
+        let mut widget = widget::Widget::new();
 
         Self {
             egui_mq: egui_miniquad::EguiMq::new(mq_ctx.as_mut()),
             mq_ctx,
-            widget: widget::Widget::new(),
+            _thread: widget.spawn_thread(),
+            widget,
         }
     }
 }

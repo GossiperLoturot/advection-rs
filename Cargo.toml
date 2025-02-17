@@ -1,0 +1,11 @@
+[package]
+name = "physic-simulation"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+egui = "0.28"
+egui-miniquad = "0.15"
+egui_plot = "0.28.0"
+miniquad = "0.4"
+nalgebra = "0.33"

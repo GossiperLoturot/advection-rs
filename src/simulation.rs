@@ -135,7 +135,9 @@ impl Scenario {
                     TemporalScheme::Rk2 => tt_rk2,
                     TemporalScheme::Rk3 => tt_rk3,
                     TemporalScheme::Rk4 => tt_rk4,
-                    _ => unreachable!(),
+                    TemporalScheme::TvdRk2 => tt_tvd_rk2,
+                    TemporalScheme::TvdRk3 => tt_tvd_rk3,
+                    TemporalScheme::TvdRk4 => tt_tvd_rk4,
                 };
 
                 self.u_grid = tt(&self.u_grid, st, &self.desc);
@@ -424,4 +426,81 @@ fn tt_rk4<F: Fn(usize, &[f64], &Descriptor) -> f64>(
     }
 
     u_suc
+}
+
+fn tt_tvd_rk2<F: Fn(usize, &[f64], &Descriptor) -> f64>(
+    u_0: &[f64],
+    st: F,
+    desc: &Descriptor,
+) -> Vec<f64> {
+    let mut u_1 = u_0.to_vec();
+    let mut u_2 = u_0.to_vec();
+
+    for i in 0..u_0.len() {
+        u_1[i] = u_0[i] + st(i, u_0, desc);
+    }
+
+    for i in 0..u_0.len() {
+        u_2[i] = (u_0[i] + u_1[i] + st(i, &u_1, desc)) / 2.0;
+    }
+
+    u_2
+}
+
+fn tt_tvd_rk3<F: Fn(usize, &[f64], &Descriptor) -> f64>(
+    u_0: &[f64],
+    st: F,
+    desc: &Descriptor,
+) -> Vec<f64> {
+    let mut u_1 = u_0.to_vec();
+    let mut u_2 = u_0.to_vec();
+    let mut u_3 = u_0.to_vec();
+
+    for i in 0..u_0.len() {
+        u_1[i] = u_0[i] + st(i, u_0, desc);
+    }
+
+    for i in 0..u_0.len() {
+        u_2[i] = (3.0 * u_0[i] + u_1[i] + st(i, &u_1, desc)) / 4.0;
+    }
+
+    for i in 0..u_0.len() {
+        u_3[i] = (u_0[i] + 2.0 * u_2[i] + 2.0 * st(i, &u_2, desc)) / 3.0;
+    }
+
+    u_3
+}
+
+fn tt_tvd_rk4<F: Fn(usize, &[f64], &Descriptor) -> f64>(
+    u_0: &[f64],
+    st: F,
+    desc: &Descriptor,
+) -> Vec<f64> {
+    let mut u_1 = u_0.to_vec();
+    let mut u_2 = u_0.to_vec();
+    let mut u_3 = u_0.to_vec();
+    let mut u_4 = u_0.to_vec();
+
+    for i in 0..u_0.len() {
+        u_1[i] = (2.0 * u_0[i] + st(i, u_0, desc)) / 2.0;
+    }
+
+    for i in 0..u_0.len() {
+        u_2[i] = (2.0 * u_0[i] - st(i, u_0, desc) + 2.0 * u_1[i] + 2.0 * st(i, &u_1, desc)) / 4.0;
+    }
+
+    for i in 0..u_0.len() {
+        u_3[i] = (u_0[i] - st(i, u_0, desc) + 2.0 * u_1[i] - 3.0 * st(i, &u_1, desc)
+            + 6.0 * u_2[i]
+            + 9.0 * st(i, &u_2, desc))
+            / 9.0;
+    }
+
+    for i in 0..u_0.len() {
+        u_4[i] =
+            (2.0 * u_1[i] + st(i, &u_1, desc) + 2.0 * u_2[i] + 2.0 * u_3[i] + st(i, &u_3, desc))
+                / 6.0;
+    }
+
+    u_4
 }

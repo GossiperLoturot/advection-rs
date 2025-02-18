@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use crate::simulation::{Descriptor, Scenario};
 
+#[derive(Clone, Debug)]
 pub struct Body {
     desc: Descriptor,
     scenario: Arc<Mutex<Option<Scenario>>>,
@@ -64,7 +65,7 @@ impl Body {
             let instant = std::time::Instant::now();
 
             if let Some(scenario) = scenario.lock().as_mut() {
-                scenario.forward(scenario.desc.delta_t);
+                scenario.forward();
 
                 let elapsed = instant.elapsed().as_secs_f64();
                 let loop_wait =

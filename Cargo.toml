@@ -10,3 +10,4 @@ egui_plot = "0.28"
 miniquad = "0.4"
 nalgebra = "0.33"
 parking_lot = "0.12"
+strum = { version = "0.27", features = ["derive"] }

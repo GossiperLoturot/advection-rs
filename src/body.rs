@@ -64,16 +64,18 @@ impl Body {
         std::thread::spawn(move || loop {
             let instant = std::time::Instant::now();
 
-            if let Some(scenario) = scenario.lock().as_mut() {
+            let wait_time = if let Some(scenario) = scenario.lock().as_mut() {
                 scenario.forward();
 
                 let elapsed = instant.elapsed().as_secs_f64();
-                let loop_wait =
+                let wait_time =
                     (scenario.desc.delta_t - elapsed).max(0.0) / scenario.desc.time_scale;
-                std::thread::sleep(std::time::Duration::from_secs_f64(loop_wait));
+                wait_time
             } else {
-                std::thread::sleep(std::time::Duration::from_secs_f64(WAIT_TIME));
-            }
+                WAIT_TIME
+            };
+
+            std::thread::sleep(std::time::Duration::from_secs_f64(wait_time));
         })
     }
 }

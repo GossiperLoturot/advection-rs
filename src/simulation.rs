@@ -25,6 +25,8 @@ pub struct Descriptor {
     pub delta_t: f64,
     pub delta_x: f64,
     pub bound: f64,
+    pub x_1: f64,
+    pub x_2: f64,
     pub vel: f64,
     pub spatial_scheme: SpatialScheme,
     pub temporal_scheme: TemporalScheme,
@@ -37,6 +39,8 @@ impl Descriptor {
             delta_t: 0.01666,
             delta_x: 0.05,
             bound: 10.0,
+            x_1: 2.0,
+            x_2: 4.0,
             vel: 1.0,
             spatial_scheme: SpatialScheme::WENO,
             temporal_scheme: TemporalScheme::ForwardEuler,
@@ -48,6 +52,8 @@ impl Descriptor {
         ui.add(egui::Slider::new(&mut self.delta_t, 0.0..=0.1).text("Delta Time"));
         ui.add(egui::Slider::new(&mut self.delta_x, 0.0..=0.1).text("Delta Space"));
         ui.add(egui::Slider::new(&mut self.bound, 0.0..=100.0).text("Bound"));
+        ui.add(egui::Slider::new(&mut self.x_1, 0.0..=10.0).text("x1"));
+        ui.add(egui::Slider::new(&mut self.x_2, 0.0..=10.0).text("x2"));
         ui.add(egui::Slider::new(&mut self.vel, 0.0..=10.0).text("Velocity"));
 
         let display = format!("{:?}", self.spatial_scheme);
@@ -96,7 +102,7 @@ impl Scenario {
                 let n = discretize(desc.bound, &desc);
                 let mut u = nalgebra::DVector::zeros(n);
 
-                u = init_u(&u, &desc);
+                u = init_square_wave(&u, &desc);
 
                 let g = nalgebra::DVector::zeros(n);
                 Buffer::CIP { u, g }
@@ -105,7 +111,7 @@ impl Scenario {
                 let n = discretize(desc.bound, &desc);
                 let mut u = nalgebra::DVector::zeros(n);
 
-                u = init_u(&u, &desc);
+                u = init_square_wave(&u, &desc);
 
                 Buffer::Base { u }
             }
@@ -143,7 +149,10 @@ impl Scenario {
                     TemporalScheme::TvdRk4 => tvd_rk4,
                 };
 
-                *u = forward_fn(&u, diff_fn, &self.desc);
+                *u = forward_fn(u, diff_fn, &self.desc);
+            }
+            (SpatialScheme::CIP, Buffer::CIP { u, g }) => {
+                (*u, *g) = cip(u, g, &self.desc);
             }
             _ => unreachable!(),
         }
@@ -173,13 +182,13 @@ fn discretize(x: f64, desc: &Descriptor) -> usize {
     (x / desc.delta_x).round() as usize
 }
 
-fn init_u(u: &nalgebra::DVector<f64>, desc: &Descriptor) -> nalgebra::DVector<f64> {
+fn init_square_wave(u: &nalgebra::DVector<f64>, desc: &Descriptor) -> nalgebra::DVector<f64> {
     let n = u.len();
 
     let mut ret = nalgebra::DVector::zeros(n);
 
-    let lower = discretize(0.1 * desc.bound, desc);
-    let upper = discretize(0.2 * desc.bound, desc);
+    let lower = discretize(desc.x_1, desc);
+    let upper = discretize(desc.x_2, desc);
     for i in lower..upper {
         ret[i] = 1.0;
     }
@@ -331,30 +340,6 @@ fn weno_diff(u: &nalgebra::DVector<f64>, desc: &Descriptor) -> nalgebra::DVector
     ret
 }
 
-fn cip(
-    u: &nalgebra::DVector<f64>,
-    g: &nalgebra::DVector<f64>,
-    desc: &Descriptor,
-) -> (nalgebra::DVector<f64>, nalgebra::DVector<f64>) {
-    let n = u.len();
-    let dx = desc.delta_x;
-    let p = -desc.vel * desc.delta_t;
-
-    let mut ret_0 = nalgebra::DVector::zeros(n);
-    let mut ret_1 = nalgebra::DVector::zeros(n);
-
-    for i in 1..u.len() {
-        let a = (g[i] + g[i - 1]) / dx.powi(2) - 2.0 * (u[i] - u[i - 1]) / dx.powi(3);
-        let b = 3.0 * (u[i - 1] - u[i]) / dx.powi(2) + (2.0 * g[i] + g[i - 1]) / dx;
-        let c = g[i];
-
-        ret_0[i] = a * p.powi(3) + b * p.powi(2) + c * p;
-        ret_1[i] = 3.0 * a * p.powi(2) + 2.0 * b * p + c;
-    }
-
-    (ret_0, ret_1)
-}
-
 fn forward_euler<F: Fn(&nalgebra::DVector<f64>, &Descriptor) -> nalgebra::DVector<f64>>(
     u: &nalgebra::DVector<f64>,
     diff_fn: F,
@@ -438,4 +423,28 @@ fn tvd_rk4<F: Fn(&nalgebra::DVector<f64>, &Descriptor) -> nalgebra::DVector<f64>
     let u_4 =
         (2.0 * &u_1 + diff_fn(&u_1, desc) + 2.0 * &u_2 + 2.0 * &u_3 + diff_fn(&u_3, desc)) / 6.0;
     u_4
+}
+
+fn cip(
+    u: &nalgebra::DVector<f64>,
+    g: &nalgebra::DVector<f64>,
+    desc: &Descriptor,
+) -> (nalgebra::DVector<f64>, nalgebra::DVector<f64>) {
+    let n = u.len();
+    let dx = desc.delta_x;
+    let p = -desc.vel * desc.delta_t;
+
+    let mut ret_0 = nalgebra::DVector::zeros(n);
+    let mut ret_1 = nalgebra::DVector::zeros(n);
+
+    for i in 1..u.len() {
+        let a = (g[i] + g[i - 1]) / dx.powi(2) - 2.0 * (u[i] - u[i - 1]) / dx.powi(3);
+        let b = 3.0 * (u[i - 1] - u[i]) / dx.powi(2) + (2.0 * g[i] + g[i - 1]) / dx;
+        let c = g[i];
+
+        ret_0[i] = a * p.powi(3) + b * p.powi(2) + c * p + u[i];
+        ret_1[i] = 3.0 * a * p.powi(2) + 2.0 * b * p + c;
+    }
+
+    (ret_0, ret_1)
 }

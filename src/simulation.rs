@@ -73,99 +73,89 @@ impl Descriptor {
 }
 
 #[derive(Clone, Debug)]
-pub enum SchemeBuffer {
-    None,
-    CIP { g_grid: Vec<f64> },
+pub enum Buffer {
+    Base {
+        u: nalgebra::DVector<f64>,
+    },
+    CIP {
+        u: nalgebra::DVector<f64>,
+        g: nalgebra::DVector<f64>,
+    },
 }
 
 #[derive(Clone, Debug)]
 pub struct Scenario {
     pub desc: Descriptor,
-    u_grid: Vec<f64>,
-    scheme_buffer: SchemeBuffer,
+    buffer: Buffer,
 }
 
 impl Scenario {
     pub fn new(desc: Descriptor) -> Self {
-        let n = discrete(desc.bound, &desc);
-        let mut u_grid = vec![0.0; n];
-
-        let lower = discrete(0.5, &desc).min(n);
-        let upper = discrete(1.0, &desc).min(n);
-        for i in lower..upper {
-            u_grid[i] = 1.0;
-        }
-
-        let scheme_buffer = match desc.spatial_scheme {
+        let buffer = match desc.spatial_scheme {
             SpatialScheme::CIP => {
-                let g_grid = vec![0.0; n];
-                SchemeBuffer::CIP { g_grid }
+                let n = discretize(desc.bound, &desc);
+                let mut u = nalgebra::DVector::zeros(n);
+
+                u = init_u(&u, &desc);
+
+                let g = nalgebra::DVector::zeros(n);
+                Buffer::CIP { u, g }
             }
-            _ => SchemeBuffer::None,
+            _ => {
+                let n = discretize(desc.bound, &desc);
+                let mut u = nalgebra::DVector::zeros(n);
+
+                u = init_u(&u, &desc);
+
+                Buffer::Base { u }
+            }
         };
 
-        Self {
-            desc,
-            u_grid,
-            scheme_buffer,
-        }
+        Self { desc, buffer }
     }
 
     pub fn forward(&mut self) {
-        match (self.desc.spatial_scheme, &mut self.scheme_buffer) {
+        match (self.desc.spatial_scheme, &mut self.buffer) {
             (
                 SpatialScheme::Central
                 | SpatialScheme::Upwind
                 | SpatialScheme::LaxWendroff
                 | SpatialScheme::ENO
                 | SpatialScheme::WENO,
-                _,
+                Buffer::Base { u },
             ) => {
-                let st = match self.desc.spatial_scheme {
-                    SpatialScheme::Central => st_central,
-                    SpatialScheme::Upwind => st_upwind,
-                    SpatialScheme::LaxWendroff => st_lax_wendroff,
-                    SpatialScheme::ENO => st_eno,
-                    SpatialScheme::WENO => st_weno,
+                let diff_fn = match self.desc.spatial_scheme {
+                    SpatialScheme::Central => central_diff,
+                    SpatialScheme::Upwind => upwind_diff,
+                    SpatialScheme::LaxWendroff => lax_wendroff_diff,
+                    SpatialScheme::ENO => eno_diff,
+                    SpatialScheme::WENO => weno_diff,
                     _ => unreachable!(),
                 };
 
-                let tt = match self.desc.temporal_scheme {
-                    TemporalScheme::ForwardEuler => tt_forward_euler,
-                    TemporalScheme::Rk2 => tt_rk2,
-                    TemporalScheme::Rk3 => tt_rk3,
-                    TemporalScheme::Rk4 => tt_rk4,
-                    TemporalScheme::TvdRk2 => tt_tvd_rk2,
-                    TemporalScheme::TvdRk3 => tt_tvd_rk3,
-                    TemporalScheme::TvdRk4 => tt_tvd_rk4,
+                let forward_fn = match self.desc.temporal_scheme {
+                    TemporalScheme::ForwardEuler => forward_euler,
+                    TemporalScheme::Rk2 => rk2,
+                    TemporalScheme::Rk3 => rk3,
+                    TemporalScheme::Rk4 => rk4,
+                    TemporalScheme::TvdRk2 => tvd_rk2,
+                    TemporalScheme::TvdRk3 => tvd_rk3,
+                    TemporalScheme::TvdRk4 => tvd_rk4,
                 };
 
-                self.u_grid = tt(&self.u_grid, st, &self.desc);
-            }
-            (SpatialScheme::CIP, SchemeBuffer::CIP { g_grid }) => {
-                let st = match self.desc.spatial_scheme {
-                    SpatialScheme::CIP => st_cip,
-                    _ => unreachable!(),
-                };
-
-                // Forward Euler Only
-                let u = self.u_grid.clone();
-                let u_suc = &mut self.u_grid;
-                let g = g_grid.clone();
-                let g_suc = g_grid;
-                for i in 0..u.len() {
-                    let (f_u, f_g) = st(i, &u, &g, &self.desc);
-                    u_suc[i] = u[i] + f_u;
-                    g_suc[i] = f_g;
-                }
+                *u = forward_fn(&u, diff_fn, &self.desc);
             }
             _ => unreachable!(),
         }
     }
 
     pub fn show_inside(&mut self, ui: &mut egui_plot::PlotUi) {
-        let points = self
-            .u_grid
+        let u = match &self.buffer {
+            Buffer::Base { u } => u,
+            Buffer::CIP { u, .. } => u,
+        };
+
+        let points = u
             .iter()
             .enumerate()
             .map(|(i, y)| [i as f64 * self.desc.delta_x, *y])
@@ -179,73 +169,103 @@ impl Scenario {
     }
 }
 
-fn discrete(x: f64, desc: &Descriptor) -> usize {
+fn discretize(x: f64, desc: &Descriptor) -> usize {
     (x / desc.delta_x).round() as usize
 }
 
-fn st_forward(i: usize, u: &[f64], desc: &Descriptor) -> f64 {
-    #[allow(unused_comparisons)]
-    if 0 <= i && i < u.len() - 1 {
-        let dx = desc.delta_x;
+fn init_u(u: &nalgebra::DVector<f64>, desc: &Descriptor) -> nalgebra::DVector<f64> {
+    let n = u.len();
 
-        let p = -desc.vel * desc.delta_t;
-        (u[i + 1] - u[i]) / dx * p
-    } else {
-        0.0
+    let mut ret = nalgebra::DVector::zeros(n);
+
+    let lower = discretize(0.1 * desc.bound, desc);
+    let upper = discretize(0.2 * desc.bound, desc);
+    for i in lower..upper {
+        ret[i] = 1.0;
     }
+
+    ret
 }
 
-fn st_backward(i: usize, u: &[f64], desc: &Descriptor) -> f64 {
-    if 1 <= i && i < u.len() {
-        let dx = desc.delta_x;
+fn forward_diff(u: &nalgebra::DVector<f64>, desc: &Descriptor) -> nalgebra::DVector<f64> {
+    let n = u.len();
+    let dx = desc.delta_x;
+    let p = -desc.vel * desc.delta_t;
 
-        let p = -desc.vel * desc.delta_t;
-        (u[i] - u[i - 1]) / dx * p
-    } else {
-        0.0
+    let mut ret = nalgebra::DVector::zeros(n);
+
+    for i in 0..n - 1 {
+        ret[i] = (u[i + 1] - u[i]) / dx * p;
     }
+
+    ret
 }
 
-fn st_central(i: usize, u: &[f64], desc: &Descriptor) -> f64 {
-    if 1 <= i && i < u.len() - 1 {
-        let dx = desc.delta_x;
+fn backward_diff(u: &nalgebra::DVector<f64>, desc: &Descriptor) -> nalgebra::DVector<f64> {
+    let n = u.len();
+    let dx = desc.delta_x;
+    let p = -desc.vel * desc.delta_t;
 
-        let p = -desc.vel * desc.delta_t;
+    let mut ret = nalgebra::DVector::zeros(n);
+
+    for i in 1..n {
+        ret[i] = (u[i] - u[i - 1]) / dx * p;
+    }
+
+    ret
+}
+
+fn central_diff(u: &nalgebra::DVector<f64>, desc: &Descriptor) -> nalgebra::DVector<f64> {
+    let n = u.len();
+    let dx = desc.delta_x;
+    let p = -desc.vel * desc.delta_t;
+
+    let mut ret = nalgebra::DVector::zeros(n);
+
+    for i in 1..u.len() - 1 {
         let grad_1 = (u[i + 1] - u[i - 1]) / (2.0 * dx);
-        grad_1 * p
-    } else {
-        0.0
+        ret[i] = grad_1 * p;
     }
+
+    ret
 }
 
-fn st_upwind(i: usize, u: &[f64], desc: &Descriptor) -> f64 {
+fn upwind_diff(u: &nalgebra::DVector<f64>, desc: &Descriptor) -> nalgebra::DVector<f64> {
     if 0.0 <= desc.vel {
-        st_backward(i, u, desc)
+        backward_diff(u, desc)
     } else {
-        st_forward(i, u, desc)
+        forward_diff(u, desc)
     }
 }
 
-fn st_lax_wendroff(i: usize, u: &[f64], desc: &Descriptor) -> f64 {
-    if 1 <= i && i < u.len() - 1 {
-        let dx = desc.delta_x;
+fn lax_wendroff_diff(u: &nalgebra::DVector<f64>, desc: &Descriptor) -> nalgebra::DVector<f64> {
+    let n = u.len();
+    let dx = desc.delta_x;
+    let p = -desc.vel * desc.delta_t;
 
-        let p = -desc.vel * desc.delta_t;
+    let mut ret = nalgebra::DVector::zeros(n);
+
+    for i in 1..u.len() - 1 {
         let grad_1 = (u[i + 1] - u[i - 1]) / (2.0 * dx);
         let grad_2 = (u[i + 1] - 2.0 * u[i] + u[i - 1]) / (2.0 * dx * dx);
-        grad_1 * p + grad_2 * p * p
-    } else {
-        0.0
+        ret[i] = grad_1 * p + grad_2 * p * p;
     }
+
+    ret
 }
 
-fn st_eno(i: usize, u: &[f64], desc: &Descriptor) -> f64 {
-    if 3 <= i && i < u.len() - 3 {
-        let dx = desc.delta_x;
-        let d_1h = |i: usize| (u[i + 1] - u[i]) / dx;
-        let d_2m = |i: usize| (d_1h(i) - d_1h(i - 1)) / (2.0 * dx);
-        let d_3h = |i: usize| (d_2m(i + 1) - d_2m(i)) / (3.0 * dx);
+fn eno_diff(u: &nalgebra::DVector<f64>, desc: &Descriptor) -> nalgebra::DVector<f64> {
+    let n = u.len();
+    let dx = desc.delta_x;
+    let p = -desc.vel * desc.delta_t;
 
+    let mut ret = nalgebra::DVector::zeros(n);
+
+    let d_1h = |i: usize| (u[i + 1] - u[i]) / dx;
+    let d_2m = |i: usize| (d_1h(i) - d_1h(i - 1)) / (2.0 * dx);
+    let d_3h = |i: usize| (d_2m(i + 1) - d_2m(i)) / (3.0 * dx);
+
+    for i in 3..u.len() - 3 {
         let b_1 = 0.0 <= desc.vel;
         let k = if b_1 { i - 1 } else { i };
 
@@ -270,18 +290,22 @@ fn st_eno(i: usize, u: &[f64], desc: &Descriptor) -> f64 {
             (u[i + 2] - 3.0 * u[i + 1] + 3.0 * u[i] - u[i - 1]) / (-6.0 * dx)
         };
 
-        let p = -desc.vel * desc.delta_t;
-        (q_1 + q_2 + q_3) * p
-    } else {
-        0.0
+        ret[i] = (q_1 + q_2 + q_3) * p;
     }
+
+    ret
 }
 
-fn st_weno(i: usize, u: &[f64], desc: &Descriptor) -> f64 {
-    if 3 <= i && i < u.len() - 3 {
-        let dx = desc.delta_x;
-        let d_1l = |i: usize| (u[i] - u[i - 1]) / dx;
+fn weno_diff(u: &nalgebra::DVector<f64>, desc: &Descriptor) -> nalgebra::DVector<f64> {
+    let n = u.len();
+    let dx = desc.delta_x;
+    let p = -desc.vel * desc.delta_t;
 
+    let mut ret = nalgebra::DVector::zeros(n);
+
+    let d_1l = |i: usize| (u[i] - u[i - 1]) / dx;
+
+    for i in 3..u.len() - 3 {
         let u_1 = 1.0 / 3.0 * d_1l(i - 2) - 7.0 / 6.0 * d_1l(i - 1) + 11.0 / 6.0 * d_1l(i);
         let u_2 = -1.0 / 6.0 * d_1l(i - 1) + 5.0 / 6.0 * d_1l(i) + 1.0 / 3.0 * d_1l(i + 1);
         let u_3 = 1.0 / 3.0 * d_1l(i) + 5.0 / 6.0 * d_1l(i + 1) - 1.0 / 6.0 * d_1l(i + 2);
@@ -301,206 +325,117 @@ fn st_weno(i: usize, u: &[f64], desc: &Descriptor) -> f64 {
         let w_2 = a_2 / (a_1 + a_2 + a_3);
         let w_3 = a_3 / (a_1 + a_2 + a_3);
 
-        let p = -desc.vel * desc.delta_t;
-        (w_1 * u_1 + w_2 * u_2 + w_3 * u_3) * p
-    } else {
-        0.0
+        ret[i] = (w_1 * u_1 + w_2 * u_2 + w_3 * u_3) * p;
     }
+
+    ret
 }
 
-fn st_cip(i: usize, u: &[f64], g: &[f64], desc: &Descriptor) -> (f64, f64) {
-    if 1 <= i && i < u.len() {
-        let dx = desc.delta_x;
+fn cip(
+    u: &nalgebra::DVector<f64>,
+    g: &nalgebra::DVector<f64>,
+    desc: &Descriptor,
+) -> (nalgebra::DVector<f64>, nalgebra::DVector<f64>) {
+    let n = u.len();
+    let dx = desc.delta_x;
+    let p = -desc.vel * desc.delta_t;
 
+    let mut ret_0 = nalgebra::DVector::zeros(n);
+    let mut ret_1 = nalgebra::DVector::zeros(n);
+
+    for i in 1..u.len() {
         let a = (g[i] + g[i - 1]) / dx.powi(2) - 2.0 * (u[i] - u[i - 1]) / dx.powi(3);
         let b = 3.0 * (u[i - 1] - u[i]) / dx.powi(2) + (2.0 * g[i] + g[i - 1]) / dx;
         let c = g[i];
 
-        let p = -desc.vel * desc.delta_t;
-        let f_u = a * p.powi(3) + b * p.powi(2) + c * p;
-        let f_g = 3.0 * a * p.powi(2) + 2.0 * b * p + c;
-        (f_u, f_g)
-    } else {
-        (0.0, 0.0)
+        ret_0[i] = a * p.powi(3) + b * p.powi(2) + c * p;
+        ret_1[i] = 3.0 * a * p.powi(2) + 2.0 * b * p + c;
     }
+
+    (ret_0, ret_1)
 }
 
-fn tt_forward_euler<F: Fn(usize, &[f64], &Descriptor) -> f64>(
-    u: &[f64],
-    st: F,
+fn forward_euler<F: Fn(&nalgebra::DVector<f64>, &Descriptor) -> nalgebra::DVector<f64>>(
+    u: &nalgebra::DVector<f64>,
+    diff_fn: F,
     desc: &Descriptor,
-) -> Vec<f64> {
-    let mut u_suc = u.to_vec();
-
-    for i in 0..u.len() {
-        u_suc[i] = u[i] + st(i, u, desc);
-    }
-
-    u_suc
+) -> nalgebra::DVector<f64> {
+    u + diff_fn(u, desc)
 }
 
-fn tt_rk2<F: Fn(usize, &[f64], &Descriptor) -> f64>(
-    u_0: &[f64],
-    st: F,
+fn rk2<F: Fn(&nalgebra::DVector<f64>, &Descriptor) -> nalgebra::DVector<f64>>(
+    u: &nalgebra::DVector<f64>,
+    diff_fn: F,
     desc: &Descriptor,
-) -> Vec<f64> {
-    let mut u_1 = u_0.to_vec();
-    let mut u_2 = u_0.to_vec();
-
-    for i in 0..u_0.len() {
-        u_1[i] = u_0[i] + st(i, u_0, desc);
-    }
-
-    for i in 0..u_0.len() {
-        u_2[i] = (2.0 * u_0[i] + st(i, &u_0, desc) + st(i, &u_1, desc)) / 2.0;
-    }
-
+) -> nalgebra::DVector<f64> {
+    let u_1 = u + diff_fn(u, desc);
+    let u_2 = (2.0 * u + diff_fn(u, desc) + diff_fn(&u_1, desc)) / 2.0;
     u_2
 }
 
-fn tt_rk3<F: Fn(usize, &[f64], &Descriptor) -> f64>(
-    u_0: &[f64],
-    st: F,
+fn rk3<F: Fn(&nalgebra::DVector<f64>, &Descriptor) -> nalgebra::DVector<f64>>(
+    u: &nalgebra::DVector<f64>,
+    diff_fn: F,
     desc: &Descriptor,
-) -> Vec<f64> {
-    let mut u_1 = u_0.to_vec();
-    let mut u_2 = u_0.to_vec();
-    let mut u_3 = u_0.to_vec();
-
-    for i in 0..u_0.len() {
-        u_1[i] = u_0[i] + st(i, u_0, desc);
-    }
-
-    for i in 0..u_0.len() {
-        u_2[i] = (4.0 * u_0[i] + st(i, u_0, desc) + st(i, &u_1, desc)) / 4.0;
-    }
-
-    for i in 0..u_0.len() {
-        u_3[i] = (6.0 * u_0[i]
-            + 1.0 * st(i, u_0, desc)
-            + 1.0 * st(i, &u_1, desc)
-            + 4.0 * st(i, &u_2, desc))
-            / 6.0;
-    }
-
+) -> nalgebra::DVector<f64> {
+    let u_1 = u + diff_fn(u, desc);
+    let u_2 = (4.0 * u + diff_fn(u, desc) + diff_fn(&u_1, desc)) / 4.0;
+    let u_3 =
+        (6.0 * u + diff_fn(&u_1, desc) + diff_fn(&u_1, desc) + 4.0 * diff_fn(&u_2, desc)) / 6.0;
     u_3
 }
 
-fn tt_rk4<F: Fn(usize, &[f64], &Descriptor) -> f64>(
-    u_0: &[f64],
-    st: F,
+fn rk4<F: Fn(&nalgebra::DVector<f64>, &Descriptor) -> nalgebra::DVector<f64>>(
+    u: &nalgebra::DVector<f64>,
+    diff_fn: F,
     desc: &Descriptor,
-) -> Vec<f64> {
-    let mut u_1 = u_0.to_vec();
-    let mut u_2 = u_0.to_vec();
-    let mut u_3 = u_0.to_vec();
-    let mut u_4 = u_0.to_vec();
-    let mut u_01 = u_0.to_vec();
-    let mut u_02 = u_0.to_vec();
-    let mut u_suc = u_0.to_vec();
+) -> nalgebra::DVector<f64> {
+    let u_1 = u + diff_fn(u, desc);
 
-    for i in 0..u_0.len() {
-        u_1[i] = u_0[i] + st(i, u_0, desc);
-    }
+    let u_01 = (u + &u_1) / 2.0;
+    let u_2 = u + diff_fn(&u_01, desc);
 
-    for i in 0..u_0.len() {
-        u_01[i] = (u_0[i] + u_1[i]) / 2.0;
-    }
-    for i in 0..u_0.len() {
-        u_2[i] = u_0[i] + st(i, &u_01, desc);
-    }
+    let u_02 = (u + &u_2) / 2.0;
+    let u_3 = u + diff_fn(&u_02, desc);
 
-    for i in 0..u_0.len() {
-        u_02[i] = (u_0[i] + u_2[i]) / 2.0;
-    }
-    for i in 0..u_0.len() {
-        u_3[i] = u_0[i] + st(i, &u_02, desc);
-    }
+    let u_4 = u + diff_fn(&u_3, desc);
 
-    for i in 0..u_0.len() {
-        u_4[i] = u_0[i] + st(i, &u_3, desc);
-    }
-
-    for i in 0..u_0.len() {
-        u_suc[i] = (u_1[i] + 2.0 * u_2[i] + 2.0 * u_3[i] + u_4[i]) / 6.0;
-    }
-
-    u_suc
+    (&u_1 + 2.0 * &u_2 + 2.0 * &u_3 + u_4) / 6.0
 }
 
-fn tt_tvd_rk2<F: Fn(usize, &[f64], &Descriptor) -> f64>(
-    u_0: &[f64],
-    st: F,
+fn tvd_rk2<F: Fn(&nalgebra::DVector<f64>, &Descriptor) -> nalgebra::DVector<f64>>(
+    u: &nalgebra::DVector<f64>,
+    diff_fn: F,
     desc: &Descriptor,
-) -> Vec<f64> {
-    let mut u_1 = u_0.to_vec();
-    let mut u_2 = u_0.to_vec();
-
-    for i in 0..u_0.len() {
-        u_1[i] = u_0[i] + st(i, u_0, desc);
-    }
-
-    for i in 0..u_0.len() {
-        u_2[i] = (u_0[i] + u_1[i] + st(i, &u_1, desc)) / 2.0;
-    }
-
+) -> nalgebra::DVector<f64> {
+    let u_1 = u + diff_fn(u, desc);
+    let u_2 = (u + &u_1 + diff_fn(&u_1, desc)) / 2.0;
     u_2
 }
 
-fn tt_tvd_rk3<F: Fn(usize, &[f64], &Descriptor) -> f64>(
-    u_0: &[f64],
-    st: F,
+fn tvd_rk3<F: Fn(&nalgebra::DVector<f64>, &Descriptor) -> nalgebra::DVector<f64>>(
+    u: &nalgebra::DVector<f64>,
+    diff_fn: F,
     desc: &Descriptor,
-) -> Vec<f64> {
-    let mut u_1 = u_0.to_vec();
-    let mut u_2 = u_0.to_vec();
-    let mut u_3 = u_0.to_vec();
-
-    for i in 0..u_0.len() {
-        u_1[i] = u_0[i] + st(i, u_0, desc);
-    }
-
-    for i in 0..u_0.len() {
-        u_2[i] = (3.0 * u_0[i] + u_1[i] + st(i, &u_1, desc)) / 4.0;
-    }
-
-    for i in 0..u_0.len() {
-        u_3[i] = (u_0[i] + 2.0 * u_2[i] + 2.0 * st(i, &u_2, desc)) / 3.0;
-    }
-
+) -> nalgebra::DVector<f64> {
+    let u_1 = u + diff_fn(u, desc);
+    let u_2 = (3.0 * u + &u_1 + &diff_fn(&u_1, desc)) / 4.0;
+    let u_3 = (u + 2.0 * &u_2 + 2.0 * diff_fn(&u_2, desc)) / 3.0;
     u_3
 }
 
-fn tt_tvd_rk4<F: Fn(usize, &[f64], &Descriptor) -> f64>(
-    u_0: &[f64],
-    st: F,
+fn tvd_rk4<F: Fn(&nalgebra::DVector<f64>, &Descriptor) -> nalgebra::DVector<f64>>(
+    u: &nalgebra::DVector<f64>,
+    diff_fn: F,
     desc: &Descriptor,
-) -> Vec<f64> {
-    let mut u_1 = u_0.to_vec();
-    let mut u_2 = u_0.to_vec();
-    let mut u_3 = u_0.to_vec();
-    let mut u_4 = u_0.to_vec();
-
-    for i in 0..u_0.len() {
-        u_1[i] = (2.0 * u_0[i] + st(i, u_0, desc)) / 2.0;
-    }
-
-    for i in 0..u_0.len() {
-        u_2[i] = (2.0 * u_0[i] - st(i, u_0, desc) + 2.0 * u_1[i] + 2.0 * st(i, &u_1, desc)) / 4.0;
-    }
-
-    for i in 0..u_0.len() {
-        u_3[i] = (u_0[i] - st(i, u_0, desc) + 2.0 * u_1[i] - 3.0 * st(i, &u_1, desc)
-            + 6.0 * u_2[i]
-            + 9.0 * st(i, &u_2, desc))
-            / 9.0;
-    }
-
-    for i in 0..u_0.len() {
-        u_4[i] =
-            (2.0 * u_1[i] + st(i, &u_1, desc) + 2.0 * u_2[i] + 2.0 * u_3[i] + st(i, &u_3, desc))
-                / 6.0;
-    }
-
+) -> nalgebra::DVector<f64> {
+    let u_1 = (2.0 * u + diff_fn(u, desc)) / 2.0;
+    let u_2 = (2.0 * u - diff_fn(u, desc) + 2.0 * &u_1 + 2.0 * diff_fn(&u_1, desc)) / 4.0;
+    let u_3 = (u - diff_fn(u, desc) + 2.0 * &u_1 - 3.0 * diff_fn(&u_1, desc)
+        + 6.0 * &u_2
+        + 9.0 * diff_fn(&u_2, desc))
+        / 9.0;
+    let u_4 =
+        (2.0 * &u_1 + diff_fn(&u_1, desc) + 2.0 * &u_2 + 2.0 * &u_3 + diff_fn(&u_3, desc)) / 6.0;
     u_4
 }
